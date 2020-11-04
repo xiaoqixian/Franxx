@@ -1,8 +1,11 @@
 ---
 author: lunar
-date: Wed 12 Aug 2020 09:46:45 PM CST
+date: Wed 04 Nov 2020 11:09:43 PM CST
+location: Shanghai
 ---
 
-### **Darling in the Franxx**
+### Franxx: A mini TCP/IP stack project
 
-Franxx is a twitter-like website, without any framework, only servlet.
+> Project name from anime <Darling in the franxx>
+
+同步更新doc里面的教程和src里的示例代码。

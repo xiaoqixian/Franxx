@@ -1,14 +1,4 @@
----
-author: lunar
-date: Wed 04 Nov 2020 11:19:56 PM CST
-location: Shanghai
----
-
 # 1. Ethernet & ARP
-
-### Contents
-
-[TOC]
 
 ### TUN/TAP 设备
 
@@ -272,6 +262,37 @@ struct arp_ipv4 {
 ```
 
 在[源代码](https://github.com/saminiir/level-ip.git)中，在src文件夹下，`arp.h`和`arp.c`文件定义了ARP协议的一些操作。比如可以往映射表中添加表项，可以更新某个IP对应的MAC地址，也可以直接接收一个`arp_hdr`结构体进行更新。甚至，还可以通过`arp_request`方法向外传输一个`arp_hdr`。
+
+ARP协议最大的一个应用就是根据ip地址来寻找相应的MAC，其代码实现为
+
+```c
+unsigned char* arp_get_hwaddr(uint32_t sip)
+{
+    struct list_head *item;
+    struct arp_cache_entry *entry;
+    
+    pthread_mutex_lock(&lock);
+    list_for_each(item, &arp_cache) {
+        entry = list_entry(item, struct arp_cache_entry, list);
+
+        if (entry->state == ARP_RESOLVED && 
+            entry->sip == sip) {
+            arpcache_dbg("entry", entry);
+
+            uint8_t *copy = entry->smac;
+            pthread_mutex_unlock(&lock);
+
+            return copy;
+        }
+    }
+
+    pthread_mutex_unlock(&lock);
+
+    return NULL;
+}
+```
+
+基本就是遍历映射表里面的所有表项，如果ip地址可以匹配，就返回相应的MAC地址。
 
 ### `ip` command
 

@@ -26,6 +26,7 @@ struct iphdr {
     uint16_t csum; //校验码，用于检验传输过程是否有位翻转等问题
     uint32_t saddr; //源地址
     uint32_t daddr; //收地址
+    uint8_t data[]; //ip报文的正文，这里看来没有对正文的长度做要求
 } __attribute__((packed));
 ```
 
@@ -60,7 +61,7 @@ uint16_t checksum(void *addr, int count)
 }
 ```
 
-如果返回结果为0说明没有发生位翻转，数据没有问题。
+如果返回结果为0说明没有发生位翻转，数据没有问题。其实知道有这么个函数就行了，`checksum`的具体实现涉及到信息传输原理方面的知识，没有这方面的基础就不要硬理解了。
 
 ### Internet Control Message Protocol version 4
 
@@ -76,4 +77,221 @@ struct icmp_v4 {
     uint8_t data[];
 } __attribute__((packed));
 ```
+
+### IP层的传输过程
+
+在源码`ip_input.c`中包含了ip层接收数据的函数，如下：
+
+```c
+int ip_rcv(struct sk_buff *skb)
+{
+    struct iphdr *ih = ip_hdr(skb);
+    uint16_t csum = -1;
+
+    if (ih->version != IPV4) {
+        print_err("Datagram version was not IPv4\n");
+        goto drop_pkt;
+    }
+
+    if (ih->ihl < 5) {
+        print_err("IPv4 header length must be at least 5\n");
+        goto drop_pkt;
+    }
+
+    if (ih->ttl == 0) {
+        //TODO: Send ICMP error
+        print_err("Time to live of datagram reached 0\n");
+        goto drop_pkt;
+    }
+
+    csum = checksum(ih, ih->ihl * 4, 0);
+
+    if (csum != 0) {
+        // Invalid checksum, drop packet handling
+        goto drop_pkt;
+    }
+
+    // TODO: Check fragmentation, possibly reassemble
+
+    ip_init_pkt(ih);
+
+    ip_dbg("in", ih);
+
+    /*IP层支持向上传递的TCP协议数据和同层之间传递的ICMP协议数据*/
+    switch (ih->proto) {
+    case ICMPV4:
+        icmpv4_incoming(skb);
+        return 0;
+    case IP_TCP:
+        tcp_in(skb);
+        return 0;
+    default:
+        print_err("Unknown IP header proto\n");
+        goto drop_pkt;
+    }
+
+drop_pkt:
+    free_skb(skb);
+    return 0;
+}
+```
+
+收到一个IP包后要完成一下事情：
+
+1.  检查IP版本，目前只支持IPv4版本；
+2.  检查ip包头部长度，长度小于5说明数据肯定出问题了；
+3.  检查生命周期，如果生命周期到头了，就丢包；
+4.  验证校验码是否为0；
+5.  将ip的各个数据从网络字节序转为主机字节序；
+6.  收到的数据包有两个去处，如果是TCP协议的包，则上传给TCP层（目前看来该网络栈不支持UDP协议）；如果是ICMP4协议的包，则交给该协议处理函数；
+
+`tcp_in`留到下章讲TCP协议的讲，TCP协议的复杂度远超数据链路层和IP层，算是最麻烦的一章了。
+
+现在来看一下`icmpv4_incoming`函数
+
+```c
+void icmpv4_incoming(struct sk_buff *skb) 
+{
+    struct iphdr *iphdr = ip_hdr(skb);
+    struct icmp_v4 *icmp = (struct icmp_v4 *) iphdr->data;
+
+    //TODO: Check csum
+
+    switch (icmp->type) {
+    case ICMP_V4_ECHO:
+        icmpv4_reply(skb);
+        return;
+    case ICMP_V4_DST_UNREACHABLE:
+        print_err("ICMPv4 received 'dst unreachable' code %d, "
+                  "check your routes and firewall rules\n", icmp->code);
+        goto drop_pkt;
+    default:
+        print_err("ICMPv4 did not match supported types\n");
+        goto drop_pkt;
+    }
+
+drop_pkt:
+    free_skb(skb);
+    return;
+}
+```
+
+从这段代码可以知道，ICMPv4的数据是包裹在IP报文里面的传输的，所以ICMPv4其实可以看作TCP层。
+
+目前icmp仅支持一种类型`ICMP_V4_ECHO`的应答。
+
+再来看ICMPv4的应答过程：
+
+```c
+void icmpv4_reply(struct sk_buff *skb)
+{
+    struct iphdr *iphdr = ip_hdr(skb);
+    struct icmp_v4 *icmp;
+    struct sock sk;
+    memset(&sk, 0, sizeof(struct sock));
+    
+    uint16_t icmp_len = iphdr->len - (iphdr->ihl * 4);
+
+    skb_reserve(skb, ETH_HDR_LEN + IP_HDR_LEN + icmp_len);
+    skb_push(skb, icmp_len);
+    
+    icmp = (struct icmp_v4 *)skb->data;
+        
+    icmp->type = ICMP_V4_REPLY;
+    icmp->csum = 0;
+    icmp->csum = checksum(icmp, icmp_len, 0);
+
+    skb->protocol = ICMPV4;
+    sk.daddr = iphdr->saddr;
+
+    ip_output(&sk, skb);
+    free_skb(skb);
+}
+```
+
+应答过程同样非常简单，首先同时初始化一个ip报文和一个icmp报文，但是并不需要重新分配内存，直接利用接收到的报文的数据结构改改数据就可以继续用了。
+
+各项数据的设置都非常简单，不多讲了。
+
+然后，你会发现多出来了一个新的结构体 `struct sock`，看名字就知道是与socket有关的。看到最后，发现 `ip_output` 函数需要用到这个结构体，查看 `ip_output` 函数
+
+```c
+int ip_output(struct sock *sk, struct sk_buff *skb)
+{
+    struct rtentry *rt;
+    struct iphdr *ihdr = ip_hdr(skb);
+
+    rt = route_lookup(sk->daddr);
+
+    if (!rt) {
+        // TODO: dest_unreachable
+        print_err("IP output route lookup fail\n");
+        return -1;
+    }
+
+    skb->dev = rt->dev;
+    skb->rt = rt;
+
+    skb_push(skb, IP_HDR_LEN);
+
+    ihdr->version = IPV4;
+    ihdr->ihl = 0x05;
+    ihdr->tos = 0;
+    ihdr->len = skb->len;
+    ihdr->id = ihdr->id;
+    ihdr->frag_offset = 0x4000;
+    ihdr->ttl = 64;
+    ihdr->proto = skb->protocol;
+    ihdr->saddr = skb->dev->addr;
+    ihdr->daddr = sk->daddr;
+    ihdr->csum = 0;
+
+    ip_dbg("out", ihdr);
+
+    ihdr->len = htons(ihdr->len);
+    ihdr->id = htons(ihdr->id);
+    ihdr->daddr = htonl(ihdr->daddr);
+    ihdr->saddr = htonl(ihdr->saddr);
+    ihdr->csum = htons(ihdr->csum);
+    ihdr->frag_offset = htons(ihdr->frag_offset);
+
+    ip_send_check(ihdr);
+
+    return dst_neigh_output(skb);
+}
+```
+
+我们只需要关注最后return的这个函数，`dst_neigh_output`是一个定义在`dst.c`文件中的函数，其实现为
+
+```c
+int dst_neigh_output(struct sk_buff *skb)
+{
+    struct iphdr *iphdr = ip_hdr(skb);
+    struct netdev *netdev = skb->dev;
+    struct rtentry *rt = skb->rt;
+    uint32_t daddr = ntohl(iphdr->daddr);
+    uint32_t saddr = ntohl(iphdr->saddr);
+
+    uint8_t *dmac;
+
+    if (rt->flags & RT_GATEWAY) {
+        daddr = rt->gateway;
+    }
+    
+    dmac = arp_get_hwaddr(daddr);
+    
+    if (dmac) {
+        return netdev_transmit(skb, dmac, ETH_P_IP);
+    } else {
+        arp_request(saddr, daddr, netdev);
+
+        /* Inform upper layer that traffic was not sent, retry later */
+        return -1;
+    }
+}
+```
+
+这个函数做了两个比较重要的事：第一个是查看是否设置了网关的flag，如果有，则IP地址要改为网关的IP，我们知道两个局域网之间要进行通信是必须要经过网关的，所以从这里我们可以知道我们的网络协议栈还是可以支持不同局域网之间通信的。
+
+第二件事就是调用`arp_get_hwaddr`函数，利用ARP协议来根据一个IP地址获取相应设备的MAC地址，最后再调用`netdev_transmit`传输数据。
 

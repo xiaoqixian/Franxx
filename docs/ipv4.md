@@ -261,7 +261,9 @@ int ip_output(struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-我们只需要关注最后return的这个函数，`dst_neigh_output`是一个定义在`dst.c`文件中的函数，其实现为
+这个函数里面调用了两个比较重要的函数：`route_lookup`和`dst_neigh_output`。
+
+前者我们稍后再看，先看`dst_neigh_output`，`dst_neigh_output`是一个定义在`dst.c`文件中的函数，其实现为
 
 ```c
 int dst_neigh_output(struct sk_buff *skb)
@@ -291,7 +293,46 @@ int dst_neigh_output(struct sk_buff *skb)
 }
 ```
 
-这个函数做了两个比较重要的事：第一个是查看是否设置了网关的flag，如果有，则IP地址要改为网关的IP，我们知道两个局域网之间要进行通信是必须要经过网关的，所以从这里我们可以知道我们的网络协议栈还是可以支持不同局域网之间通信的。
+这个函数做了两个比较重要的事：第一个是查看是否设置了网关的flag，如果有，则IP地址要改为网关的IP，我们知道两个局域网之间要进行通信是必须要经过网关的，但是作者好像目前为止还没有添加任何局域网之间的通信，因为没有看到任何局域网之间寻址算法的代码（看来只能由我来加上了吗）。
 
 第二件事就是调用`arp_get_hwaddr`函数，利用ARP协议来根据一个IP地址获取相应设备的MAC地址，最后再调用`netdev_transmit`传输数据。
+
+总的来说，这是一个在同一局域网内传输数据的函数，包括传输给网关。
+
+#### 寻址
+
+再来看我们说的 `route_lookup` 函数。
+
+```c
+struct rtentry *route_lookup(uint32_t daddr)
+{
+    struct list_head *item;
+    struct rtentry *rt = NULL;
+
+    list_for_each(item, &routes) {
+        rt = list_entry(item, struct rtentry, list);
+        /*如果daddr和rt->dst的非子网掩码的部分相同，说明位于同一局域网内*/
+        if ((daddr & rt->netmask) == (rt->dst & rt->netmask)) break;
+        // If no matches, we default to to default gw (last item)
+    }
+    
+    return rt;
+}
+```
+
+`rtentry` 的定义如下：
+
+```c
+struct rtentry {
+    struct list_head list;
+    uint32_t dst;
+    uint32_t gateway;
+    uint32_t netmask;
+    uint8_t flags;
+    uint32_t metric; //metric即度量，决定了ip在路由中的下一跳，在这个项目中根本没用（苦笑）
+    struct netdev *dev;
+};
+```
+
+`routes`是一个全局变量，是一个循环链表，里面存储了所有的局域网（应该可以这么说）。在那个循环里面，会注意比对目的ip地址 `daddr` 与每个局域网的 `dst` 属性在进行子网掩码运算后的值，如果可以匹配，则说明属于该局域网，就返回该局域网的 `entry`。
 

@@ -21,6 +21,8 @@
 #include <linux/socket.h>
 #include <linux/if_tun.h>
 
+#include "debug.h"
+#include "lib.h"
 /*
  * Open a tun device file and return a file descriptor
  * dev_name: when a tun device is opend, the kernel will allocate a name to it, we make the argument dev_name points to the name so we can know the allocated name.
@@ -55,45 +57,156 @@ int tun_alloc(char* dev_name, int flags) {
 }
 
 /*
+ * set TUN device socket, as a TUN device is just a tunnel, it need a socket to send a packet back to the host network stack and the host network stack will send the packet out.
+ */
+static int skfd;/*socket file descriptor*/
+void set_tap_socket() {
+    skfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);/*this socket function is a system call*/
+    if (skfd < 0) {
+        perror("create socket error");
+    }
+}
+
+void unset_tap_socket() {
+    close(skfd);
+}
+
+void delete_tap(int tap_fd) {
+    if (ioctl(tap_fd, TUNSETPERSIST, 0) < 0) {
+        return ;
+    }
+    close(tap_fd);
+}
+
+/*
  * flag TUNSETPERSIST: Set the corresponding network device to the continuous mode, the default virtual network device, when its associated file character is closed, will also be associated with the routing and other information will disappear. If set to persistent mode, it will be reserved for later use. Bool value of type int.
  */
-int set_tap(int fd) {
-    if (!errno && ioctl(fd, TUNSETPERSIST, 1) < 0) {
+int set_persist_tap(int tap_fd) {
+    if (!errno && ioctl(tap_fd, TUNSETPERSIST, 1) < 0) {
         perror("ioctl TUNSETPERSIST");
         return -1;
     }
     return 0;
 }
 
-int main() {
-    int tun, res;
-    char dev_name[IFNAMSIZ];
-    unsigned char buf[4096];
+/*
+ * set TAP socket flags
+ * SIOCGIFFLAGS: get original flags
+ * SIOCSIFFLAGS: set new flags
+ */
+void setflags_tap(unsigned char* name, unsigned short flags, int set) {
+    struct ifreq ifr = {};
 
-    dev_name[0] = '\0';
-    tun = tun_alloc(dev_name, IFF_TUN | IFF_NO_PI);
-    if (tun < 0) {
-        perror("tun_alloc error");
-        return -1;
+    strcpy(ifr.ifr_name, (char*)name);
+    /*get original flags*/
+    if (ioctl(skfd, SIOCGIFFLAGS, (void*)&ift) < 0) {
+        close(skfd);
+        perrx("socket SIOCGIFFLAGS");
     }
-    printf("TUN name: %s\n", dev_name);
 
-    while (1) {
-        unsigned char ip[4];
-        res = read(tun, buf, sizeof(buf));
-        if (res < 0) {
-            break;
-        }
-        printf("receive: %s\n", buf);
-        memcpy(ip, &buf[12], 4);
-        memcpy(&buf[12], &buf[16], 4);
-        memcpy(&buf[16], ip, 4);
-        buf[20] = 0;
-        *((unsigned char*)&buf[22]) += 8;
-        printf("read %d bytes\n", res);
-        res = write(tun, buf, res);
-        printf("write %d bytes\n", res);
-        printf("write %s\n", buf);
+    /*set new flags*/
+    if (set) {
+        ifr.ifr_flags |= flags;
+    } else {
+        ifr.ifr_flags &= ~flags & 0xffff;
     }
-    return 0;
+    if (ioctl(skfd, SIOCSIFFLAGS, (void*)&ifr) < 0) {
+        close(skfd);
+        perrx("socket SIOCSIFFLAGS");
+    }
+}
+
+/*
+ * SIOCSIFNETMASK: set netmask
+ */
+void set_tap_netmask(unsigned char* name, unsigned int netmask) {
+    struct ifreq ifr = {};
+    struct sockaddr_in* sockaddr;/*defined in <linux/socket.h>*/
+
+    strcpy(ifr.ifr_name, (char*)name);
+    sockaddr = (struct sockaddr_in*)&ift.ifr_netmask;
+    sockaddr->sin_family = AF_INET;
+    sockaddr->sin_addr.s_addr = netmask;
+    if (ioctl(skfd, SIOCSIFNETMASK, (void*)&ifr) < 0) {
+        close(skfd);
+        perrx("socket SIOCSIFNETMASK");
+    }
+    DEBUG("set netmask: ", ipfmt(netmask));
+}
+
+void setdown_tap(unsigned char* name) {
+    setflags_tap(name, IFF_UP | IFF_RUNNING, 0);
+    DEBUG("ifdown %s", name);
+}
+
+void setup_tap(unsigned char* name) {
+    setflags_tap(name, IFF_UP | IFF_RUNNING, 1);
+    DEBUG("ifup %s", name);
+}
+
+/*
+ * mtu: Maximum Transmission Unit of data link layer
+ */
+void get_mtu_tap(unsigned char* name, int* mtu) {
+    struct ifreq ifr = {};
+    strcpy(ifr.ifr_name, (char*)name);
+
+    if (ioctl(skfd, SIOCGIFMTU, (void*)&ifr) < 0) {
+        close(skfd);
+        perrx("ioctl SIOCGIFMTU");
+    }
+    *mtu = ifr.ifr_mtu;
+    DEBUG("mtu: %d", ifr.ifr_mtu);
+}
+
+void set_ipaddr_tap(unsigned char* name, unsigned int ipaddr) {
+    struct ifreq ifr = {};
+    struct sockaddr_in* sockaddr;
+    strcpy(ifr.ifr_name, (char*)name);
+    
+    sockaddr = (struct sockaddr_in*)&ifr.ifr_addr;
+    sockaddr->sin_addr.s_addr = ipaddr;
+    sockaddr->sin_family = AF_INET;
+    
+    if (ioctl(skfd, SIOCSIFADDR, (void*)&ifr) < 0) {
+        close(skfd);
+        perrx("socket SIOCSIFADDR");
+    }
+    DEBUG("set tap ipaddr: %d", ipfmt(ipaddr));
+}
+
+void get_ipaddr_tap(unsigned char* name, unsigned int* ipaddr) {
+    struct ifreq ifr = {};
+    strcpy(ifr.ifr_name, (char*)name);
+
+    if (ioctl(skfd, SIOCGIFADDR, (void*)&ifr) < 0) {
+        close(skfd);
+        perrx("socket SIOCGIFADDR");
+        return ;
+    }
+    struct sockaddr_in* sockaddr = (struct sockaddr_in*)&ifr.ifr_addr;
+    *ipaddr = sockaddr->sin_addr.s_addr;
+    DEBUG("get tap ipaddr: %d", ipfmt(*ipaddr));
+}
+
+void get_name_tap(int tap_fd, unsigned char* name) {
+    struct ifreq ifr = {};
+    if (ioctl(tap_fd, TUNGETIFF, (void*)&ifr)) {
+        perrx("ioctl TUNGETIFF");
+    }
+    strcpy((char*)name, ifr.ifr_name);
+    DEBUG("get tap name: %s", name);
+}
+
+/*
+ * get hardware address of the tap device, which is known as MAC address.
+ */
+void get_hwadddr_tap(int tap_fd, unsigned char* hw_addr) {
+    struct ifreq ifr;
+    memset(&ifr, 0x0, sizeof(ifr));
+    if (ioctl(tap_fd, SIOCGIFHWADDR, (void*)&ifr) < 0) {
+        perrx("ioctl SIOCGIFHWADDR");
+    }
+    strcpy(hw_addr, ifr.ifr_hwaddr.sa_data);
+    DEBUG("get tap hw_addr: %02x:%02x:%02x:%02x:%02x:%02x", hw_addr[0], hw_addr[1], hw_addr[2], hw_addr[3], hw_addr[4], hw_addr[5]);
 }

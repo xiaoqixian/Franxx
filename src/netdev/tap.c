@@ -23,25 +23,24 @@
 
 #include "debug.h"
 #include "lib.h"
+#include "tap.h"
 /*
  * Open a tun device file and return a file descriptor
  * dev_name: when a tun device is opend, the kernel will allocate a name to it, we make the argument dev_name points to the name so we can know the allocated name.
  * flags: IFF_TUN(create a TUN device), IFF_TAP(create a TAP device), IFF_NO_PI(don't include any header information, by default, every data packet passed to user space will include a header to save packet information)
  */
-int tun_alloc(char* dev_name, int flags) {
+int alloc_tap(char* dev_name) {
     assert(dev_name != NULL);
     
     struct ifreq ifr;
     int fd, err;
-    
-    char* tun_dev = "/dev/net/tun";
 
-    if ((fd = open(tun_dev, O_RDWR)) < 0) {
+    if ((fd = open(TUNTAPDEV, O_RDWR)) < 0) {
         return fd;
     }
 
     memset(&ifr, 0, sizeof(struct ifreq));
-    ifr.ifr_flags = flags;
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     
     if (*dev_name != '\0') {
         strncpy(ifr.ifr_name, dev_name, IFNAMSIZ);
@@ -76,6 +75,10 @@ void delete_tap(int tap_fd) {
         return ;
     }
     close(tap_fd);
+}
+
+void unset_tap() {
+    close(skfd);
 }
 
 /*

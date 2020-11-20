@@ -40,7 +40,7 @@ static int tap_init() {
 #ifndef CONFIG_TOP1
     get_hwaddr_tap(tap->fd, tap->hw_addr);
     set_ipaddr_tap(tap->dev_name, FAKE_TAP_ADDR);
-    get_ipaddr_tap(tap->dev_name, &(tap->ipaddr));
+    get_ipaddr_tap(tap->dev_name, &(tap->ip_addr));
     set_netmask_tap(tap->dev_name, FAKE_TAP_NETMASK);
     setup_tap(tap->dev_name);
 #endif
@@ -68,7 +68,7 @@ static int tap_write(struct netdev* dev, struct packet* pck) {
     return l;
 }
 
-static int tap_read(struct packet* pck) {
+static int _tap_read(struct packet* pck) {
     int l = read(tap->fd, pck->data, pck->len);
     if (l <= 0) {
         DEBUG("tap_read read nothing");
@@ -81,9 +81,9 @@ static int tap_read(struct packet* pck) {
     }
 }
 
-static void driver_read() {
+static void tap_read() {
     struct packet* pck = alloc_packet();
-    if (tap_read(pck) > 0) {
+    if (_tap_read(pck) > 0) {
         ether_in(tap, pck);/*pass to upper ethernet level*/
     } else {
         free_packet(pck);
@@ -106,4 +106,38 @@ static void tap_poll() {
         }
         driver_read();
     }
+}
+
+static int driver_dev_init(struct netdev* dev) {
+    if (tap_init() < 0) {
+        perrx("Init tap device failed");
+    }
+    
+    dev->net_mtu = tap->net_mtu;
+    dev->ip_addr = tap->ip_addr;
+    dev->netmask = tap->netmask;
+    DEBUG("%s ip address: " IP_FORMAT, dev->dev_name, IP_FORMAT_FUNC(dev->ip_addr));
+    DEBUG("%s mac address: " MAC_FORMAT, dev->dev_name, MAC_FORMAT_FUNC(dev->hw_addr));
+    return 0;
+}
+
+static void driver_dev_exit(struct netdev* dev) {
+    if (dev != tap) {
+        perrx("net device match error");
+    }
+    delete_tap(tap->fd);
+}
+
+static struct netdev_ops driver_ops = {
+    .output = tap_write;
+    .init = driver_dev_init;
+    .exit = driver_dev_exit;
+}
+
+void driver_init() {
+    tap = netdev_alloc("tap_driver", &)
+}
+
+void driver_exit() {
+    netdev_free(tap);
 }

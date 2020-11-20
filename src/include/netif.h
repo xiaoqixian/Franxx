@@ -16,6 +16,12 @@
 #define HW_ADDR_LEN 6 /*MAC address length*/
 #define TAP_DEV_NAME_LEN 16 /*IFNAMSIZ*/
 
+#define IP_FORMAT "%d.%d.%d.%d"
+#define IP_FORMAT_FUNC(ip) (ip) & 0xff, ((ip) >> 8) & 0xff, ((ip) >> 16) & 0xff, ((ip) >> 24) & 0xff
+
+#define MAC_FORMAT "%02x:%02x:%02x:%02x:%02x:%02x"
+#define MAC_FORMAT_FUNC(hw_addr) (hw_addr)[0],(hw_addr)[1],(hw_addr)[2],(hw_addr)[3],(hw_addr)[4],(hw_addr)[5]
+
 struct netstats;
 
 struct netdev_ops;
@@ -23,9 +29,9 @@ struct netdev_ops;
 struct pkbuf;
 
 struct netdev {
-    int net_mtu;
+    int net_mtu; /*net minimum transmission unit*/
     int fd;
-    unsigned int ipaddr;
+    unsigned int ip_addr;
     unsigned int netmask;
     unsigned char* hw_addr[HW_ADDR_LEN];
     unsigned char* dev_name[TAP_DEV_NAME_LEN];

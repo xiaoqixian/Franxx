@@ -350,3 +350,5 @@ ip route delete 192.168.1.0/24 dev eth0 # 删除路由
 [3] https://opengers.github.io/openstack/openstack-base-virtual-network-devices-tuntap-veth/
 
 [4] https://www.runoob.com/linux/linux-comm-ip.html
+
+[5] https://blog.liu-kevin.com/2020/01/06/tun-tapshe-bei-qian-xi/

@@ -33,7 +33,7 @@ struct netdev {
     int fd;
     unsigned int ip_addr;
     unsigned int netmask;
-    unsigned char* hw_addr[HW_ADDR_LEN];
+    unsigned char* mac_addr[HW_ADDR_LEN];
     unsigned char* dev_name[TAP_DEV_NAME_LEN];
     struct netdev_ops* ops;
     struct netstats stats;
@@ -62,7 +62,7 @@ struct netdev_ops {
 struct packet {
     struct list_node* pk_list;
     unsigned short protocol; /*ethernet packet type ID*/
-    unsigned short type; /*packet hardware address ID*/
+    unsigned short type; /*packet hardware address ID: MULTICASE,BROADCASE,LOCALHOST,OTHERHOST*/
     int len; /*length of data*/
     int ref_count;
     struct netdev* in_dev;
